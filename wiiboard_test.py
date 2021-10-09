@@ -37,8 +37,8 @@ class EventProcessor:
         self._events = [x for x in range(WEIGHT_SAMPLES)]
 
     def mass(self, event):
-        if (event.totalWeight > 2):
-            self._events[self._measureCnt] = event.totalWeight*2.20462
+        if event.totalWeight > 0:
+            self._events[self._measureCnt] = event.totalWeight
             self._measureCnt += 1
             if self._measureCnt == WEIGHT_SAMPLES:
                 self._sum = 0
@@ -46,7 +46,7 @@ class EventProcessor:
                     self._sum += self._events[x]
                 self._weight = self._sum/WEIGHT_SAMPLES
                 self._measureCnt = 0
-                print(str(self._weight) + " lbs")
+                print(str(self._weight) + " kg")
             if not self._measured:
                 self._measured = True
 
@@ -110,47 +110,49 @@ class Wiiboard:
             print("Connected to Wiiboard at address " + address)
             self.status = "Connected"
             self.address = address
+            print("Wiiboard connected")
             self.calibrate()
             useExt = ["00", COMMAND_REGISTER, "04", "A4", "00", "40", "00"]
             self.send(useExt)
             self.setReportingType()
-            print("Wiiboard connected")
+            print("Wiiboard ready")
         else:
             print("Could not connect to Wiiboard at address " + address)
 
     def receive(self):
-        while self.status == "Connected" and not self.processor.done:
-            data = self.receivesocket.recv(25)
-            intype = int(data.encode("hex")[2:4])
-            if intype == INPUT_STATUS:
-                # TODO: Status input received. It just tells us battery life really
-                self.setReportingType()
-            elif intype == INPUT_READ_DATA:
-                if self.calibrationRequested:
-                    packetLength = (int(str(data[4]).encode("hex"), 16) / 16 + 1)
-                    self.parseCalibrationResponse(data[7:(7 + packetLength)])
+        try:
+            while self.status == "Connected" and not self.processor.done:
+                data = self.receivesocket.recv(25)
+                # print(data)
+                # intype = int(data.encode("hex")[2:4])
+                intype = int(codecs.encode(data, "hex")[2:4])
+                if intype == INPUT_STATUS:
+                    # TODO: Status input received. It just tells us battery life really
+                    self.setReportingType()
+                elif intype == INPUT_READ_DATA:
+                    if self.calibrationRequested:
+                        # packetLength = (int(str(data[4]).encode("hex"), 16) / 16 + 1)
+                        packetLength = data[4] // 16 + 1
+                        self.parseCalibrationResponse(data[7:(7 + packetLength)])
 
-                    if packetLength < 16:
-                        self.calibrationRequested = False
-            elif intype == EXTENSION_8BYTES:
-                self.processor.mass(self.createBoardEvent(data[2:12]))
-            else:
-                print("ACK to data write received")
+                        if packetLength < 16:
+                            self.calibrationRequested = False
+                            print("Calibration done")
+                elif intype == EXTENSION_8BYTES:
+                    self.processor.mass(self.createBoardEvent(data[2:12]))
+                else:
+                    print("ACK to data write received")
+        except KeyboardInterrupt:
+            self.disconnect()
+            sys.exit(0)
 
     def disconnect(self):
         if self.status == "Connected":
             self.status = "Disconnecting"
-            while self.status == "Disconnecting":
-                self.wait(100)
-        try:
             self.receivesocket.close()
-        except:
-            pass
-        try:
             self.controlsocket.close()
-        except:
-            pass
-        print("WiiBoard disconnected")
+            print("\nWiiBoard disconnected")
+        self.status = "Disconnected"
 
     # Try to discover a Wiiboard
     def discover(self):
@@ -171,7 +173,7 @@ class Wiiboard:
         buttonPressed = False
         buttonReleased = False
 
-        state = (int(buttonBytes[0].encode("hex"), 16) << 8) | int(buttonBytes[1].encode("hex"), 16)
+        state = (buttonBytes[0] << 8) | buttonBytes[1]
         if state == BUTTON_DOWN_MASK:
             buttonPressed = True
             if not self.buttonDown:
@@ -184,10 +186,10 @@ class Wiiboard:
                 self.buttonDown = False
                 print("Button released")
 
-        rawTR = (int(_bytes[0].encode("hex"), 16) << 8) + int(_bytes[1].encode("hex"), 16)
-        rawBR = (int(_bytes[2].encode("hex"), 16) << 8) + int(_bytes[3].encode("hex"), 16)
-        rawTL = (int(_bytes[4].encode("hex"), 16) << 8) + int(_bytes[5].encode("hex"), 16)
-        rawBL = (int(_bytes[6].encode("hex"), 16) << 8) + int(_bytes[7].encode("hex"), 16)
+        rawTR = (_bytes[0] << 8) + _bytes[1]
+        rawBR = (_bytes[2] << 8) + _bytes[3]
+        rawTL = (_bytes[4] << 8) + _bytes[5]
+        rawBL = (_bytes[6] << 8) + _bytes[7]
 
         topLeft = self.calcMass(rawTL, TOP_LEFT)
         topRight = self.calcMass(rawTR, TOP_RIGHT)
@@ -221,11 +223,11 @@ class Wiiboard:
         if len(_bytes) == 16:
             for i in range(2):
                 for j in range(4):
-                    self.calibration[i][j] = (int(_bytes[index].encode("hex"), 16) << 8) + int(_bytes[index + 1].encode("hex"), 16)
+                    self.calibration[i][j] = (_bytes[index] << 8) + _bytes[index + 1]
                     index += 2
         elif len(_bytes) < 16:
             for i in range(4):
-                self.calibration[2][i] = (int(_bytes[index].encode("hex"), 16) << 8) + int(_bytes[index + 1].encode("hex"), 16)
+                self.calibration[2][i] = (_bytes[index] << 8) + _bytes[index + 1]
                 index += 2
 
     # Send <data> to the Wiiboard
@@ -255,6 +257,9 @@ class Wiiboard:
         self.LED = light
 
     def calibrate(self):
+        print("Sleep for 5s...")
+        self.wait(5000)
+        print("Calibrating...")
         message = ["00", COMMAND_READ_REGISTER, "04", "A4", "00", "24", "00", "18"]
         self.send(message)
         self.calibrationRequested = True
